@@ -134,7 +134,7 @@ class Attention(nn.Module):
         qkv = self.qkv_proj(hidden_states)
 
         # Split head
-        qkv = qkv.view(batch_size, seq_len, self.num_heads + 2 * self.num_key_value_heads, self.head_dim)
+        qkv = qkv.reshape(batch_size, seq_len, self.num_heads + 2 * self.num_key_value_heads, self.head_dim)
         query = qkv[:, :, :self.num_heads]
         key = qkv[:, :, self.num_heads: self.num_heads + self.num_key_value_heads]
         value = qkv[:, :, self.num_heads + self.num_key_value_heads:]
@@ -149,8 +149,13 @@ class Attention(nn.Module):
         if isinstance(attn_output, tuple):  # fa2 and fa3 compatibility
             attn_output = attn_output[0]
 
-        # attn_output: [batch_size, num_heads, seq_len, head_dim]
-        attn_output = attn_output.view(batch_size, seq_len, self.output_size)  # type: ignore
+        # attn_output can be [B,S,H,D] or [B,H,S,D]; normalize to [B,S,H,D]
+        if attn_output.dim() == 4 and attn_output.shape[1] != seq_len and attn_output.shape[2] == seq_len:
+            attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
+        # Now safe to collapse heads
+        # attn_output: [batch_size, seq_len, num_heads, head_dim]
+        # Reshape is safe for non-contiguous tensors
+        attn_output = attn_output.reshape(batch_size, seq_len, self.output_size)  # type: ignore
         return self.o_proj(attn_output)
 
 

@@ -155,7 +155,7 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
             if pad_count > 0:
                 puzzle_embedding = F.pad(puzzle_embedding, (0, pad_count))
 
-            embedding = torch.cat((puzzle_embedding.view(-1, self.puzzle_emb_len, self.config.hidden_size), embedding), dim=-2)
+            embedding = torch.cat((puzzle_embedding.reshape(-1, self.puzzle_emb_len, self.config.hidden_size), embedding), dim=-2)
 
         # Position embeddings
         if self.config.pos_encodings == "learned":
@@ -173,8 +173,8 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         
     def reset_carry(self, reset_flag: torch.Tensor, carry: HierarchicalReasoningModel_ACTV1InnerCarry):
         return HierarchicalReasoningModel_ACTV1InnerCarry(
-            z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
-            z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+            z_H=torch.where(reset_flag.reshape(-1, 1, 1), self.H_init, carry.z_H),
+            z_L=torch.where(reset_flag.reshape(-1, 1, 1), self.L_init, carry.z_L),
         )
 
     def forward(self, carry: HierarchicalReasoningModel_ACTV1InnerCarry, batch: Dict[str, torch.Tensor]) -> Tuple[HierarchicalReasoningModel_ACTV1InnerCarry, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
@@ -243,7 +243,7 @@ class HierarchicalReasoningModel_ACTV1(nn.Module):
         
         new_steps = torch.where(carry.halted, 0, carry.steps)
 
-        new_current_data = {k: torch.where(carry.halted.view((-1, ) + (1, ) * (batch[k].ndim - 1)), batch[k], v) for k, v in carry.current_data.items()}
+        new_current_data = {k: torch.where(carry.halted.reshape((-1, ) + (1, ) * (batch[k].ndim - 1)), batch[k], v) for k, v in carry.current_data.items()}
 
         # Forward inner model
         new_inner_carry, logits, (q_halt_logits, q_continue_logits) = self.inner(new_inner_carry, new_current_data)
