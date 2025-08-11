@@ -13,6 +13,12 @@ try:
 except Exception:  # pragma: no cover
     psutil = None
 
+# Optional torch import for checkpoint compatibility checks
+try:
+    import torch  # type: ignore
+except Exception:  # pragma: no cover
+    torch = None
+
 # Import test harness functions
 from scripts import test_self_evolve as tse
 
@@ -68,7 +74,29 @@ RUN_CONFIG: Dict[str, Any] = {
     "AUTOPATCH_MAX_FILES": 10,
     "AUTOPATCH_STRICT": True,
     "SMOKETEST_CMD": "python -m scripts.test_self_evolve --no-evolve --no-train",
+
+    # Config chaining
+    "CHAIN_EVOLVED_CONFIG": True,
+    # Only reuse a previous checkpoint if its saved config matches the config we will use this cycle
+    "CHECKPOINT_REQUIRE_MATCH": True,
 }
+
+# Architecture keys used to determine checkpoint/config compatibility
+ARCH_MATCH_KEYS: List[str] = [
+    "puzzle_emb_ndim",
+    "num_puzzle_identifiers",
+    "vocab_size",
+    "H_cycles",
+    "L_cycles",
+    "H_layers",
+    "L_layers",
+    "hidden_size",
+    "expansion",
+    "num_heads",
+    "pos_encodings",
+    "halt_max_steps",
+]
+
 
 def _project_root() -> str:
     return os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
@@ -332,18 +360,30 @@ def run_cycle(cfg: Dict[str, Any], cycle: int) -> Dict[str, Any]:
     global_seen = str(cfg.get("GLOBAL_SEEN_PAPERS_PATH", "")).strip()
     os.environ["HRM_SEEN_PAPERS_PATH"] = global_seen or paths["seen_papers_path"]
 
+    # Determine config chaining input for this cycle
+    chain_enabled = bool(cfg.get("CHAIN_EVOLVED_CONFIG", True))
+    prev_cfg_path = _prev_evolved_config_path(cfg, cycle) if chain_enabled else ""
+    use_cfg_path = prev_cfg_path if prev_cfg_path else ""
+    chained_config_used = bool(use_cfg_path)
+
     # Train short burst (skip entirely if steps<=0, but emit stub)
     checkpoint_path = os.path.join(_run_dir(cfg), cfg["CHECKPOINT_FILENAME"])
+    # Check checkpoint compatibility with the config we will use this cycle
+    load_ckpt_path = checkpoint_path
+    if chained_config_used and bool(cfg.get("CHECKPOINT_REQUIRE_MATCH", True)):
+        if not _checkpoint_cfg_compatible(checkpoint_path, use_cfg_path, ARCH_MATCH_KEYS):
+            load_ckpt_path = ""
+
     if int(cfg.get("TRAIN_STEPS_PER_CYCLE", 0)) > 0:
         args_train = SimpleNamespace(
-            use_config="",
+            use_config=use_cfg_path,
             batch_size=cfg["BATCH_SIZE"],
             seq_len=cfg["SEQ_LEN"],
             vocab_size=cfg["VOCAB_SIZE"],
             num_puzzle_ids=cfg["NUM_PUZZLE_IDS"],
             until_halt=cfg["UNTIL_HALT"],
             act_steps=cfg["TRAIN_STEPS_PER_CYCLE"],
-            load_checkpoint_path=checkpoint_path,
+            load_checkpoint_path=load_ckpt_path,
             save_checkpoint_path=checkpoint_path,
         )
         t_steps, t_loss, t_metrics, t_all_halted = tse.run_forward_backward(args_train)
@@ -360,9 +400,8 @@ def run_cycle(cfg: Dict[str, Any], cycle: int) -> Dict[str, Any]:
         }, f, indent=2)
 
     # Self evolve
-    # Self evolve
     args_evolve = SimpleNamespace(
-        use_config="",
+        use_config=use_cfg_path,
         batch_size=cfg["BATCH_SIZE"],
         seq_len=cfg["SEQ_LEN"],
         vocab_size=cfg["VOCAB_SIZE"],
@@ -418,6 +457,9 @@ def run_cycle(cfg: Dict[str, Any], cycle: int) -> Dict[str, Any]:
         "autopatch_smoke_ok": autopatch.get("smoke_ok", False),
         "autopatch_rolled_back": autopatch.get("rolled_back", False),
         "autopatch_error": autopatch.get("error", ""),
+        "chained_config_used": chained_config_used,
+        "chained_config_path": use_cfg_path,
+        "checkpoint_used": bool(load_ckpt_path and os.path.exists(load_ckpt_path)),
     }
     _append_jsonl(paths["metrics_path"], rec)
     _append_csv(paths["metrics_csv_path"], rec)
