@@ -32,6 +32,7 @@ RUN_CONFIG: Dict[str, Any] = {
     "MAX_CYCLES": 10_000,
     "CYCLE_INTERVAL_SEC": 15 * 60,
     "CHECKPOINT_FILENAME": "model_latest.pt",
+    "EVOLVED_CONFIG_FILENAME": "hrm_evolved_config.json",
 
     # Training per cycle
     "TRAIN_STEPS_PER_CYCLE": 2,
@@ -165,7 +166,7 @@ def _ensure_dirs(cfg: Dict[str, Any], cycle: int) -> Dict[str, str]:
         "seen_papers_path": os.path.join(rdir, "seen_papers.jsonl"),
         "report_path": os.path.join(cdir, "evolve_report.json"),
         "proposal_path": os.path.join(cdir, "code_evolve_proposal.json"),
-        "config_export_path": os.path.join(cdir, "hrm_evolved_config.json"),
+        "config_export_path": os.path.join(cdir, cfg["EVOLVED_CONFIG_FILENAME"]),
         "train_log_path": os.path.join(cdir, "train.json"),
         "backup_dir": os.path.join(cdir, "autopatch_backup"),
         "patches_dir": os.path.join(cdir, "autopatch_patches"),
@@ -274,6 +275,61 @@ def _rotated_query_terms(cfg: Dict[str, Any], cycle: int) -> List[str]:
             seen.add(t)
             out.append(t)
     return out
+
+
+def _prev_evolved_config_path(cfg: Dict[str, Any], cycle: int) -> str:
+    """Return the most recent evolved config JSON path before the given cycle.
+
+    Scans backwards from cycle-1 to 0 for ``cfg["EVOLVED_CONFIG_FILENAME"]``
+    inside each ``cycle_<idx>`` directory. Returns an empty string if none
+    exist.
+    """
+    try:
+        if cycle <= 0:
+            return ""
+        for i in range(cycle - 1, -1, -1):
+            cdir = _cycle_dir(cfg, i)
+            p = os.path.join(cdir, cfg["EVOLVED_CONFIG_FILENAME"])
+            if os.path.exists(p):
+                return p
+        return ""
+    except Exception:
+        return ""
+
+
+def _checkpoint_cfg_compatible(checkpoint_path: str, config_json_path: str, keys: List[str]) -> bool:
+    """Check whether a saved checkpoint's config matches a target config file.
+
+    - If ``config_json_path`` is missing/empty, we allow usage of the checkpoint
+      (no comparison performed) and return True.
+    - If the checkpoint does not exist or cannot be read, return False.
+    - Compares only the provided ``keys``.
+    """
+    try:
+        # No target config to compare against -> allow
+        if not config_json_path or not os.path.exists(config_json_path):
+            return True
+
+        # Must have checkpoint and torch to read it
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            return False
+        if torch is None:
+            return False
+
+        state = torch.load(checkpoint_path, map_location="cpu")
+        cfg_ckpt = state.get("cfg", None) if isinstance(state, dict) else None
+        if not isinstance(cfg_ckpt, dict):
+            return False
+
+        with open(config_json_path, "r", encoding="utf-8") as f:
+            cfg_json = json.load(f)
+
+        for k in keys or []:
+            if cfg_ckpt.get(k) != cfg_json.get(k):
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _apply_patches(cfg: Dict[str, Any], proposal: Dict[str, Any], paths: Dict[str, str]) -> Dict[str, Any]:

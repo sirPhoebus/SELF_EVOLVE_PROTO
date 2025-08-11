@@ -104,7 +104,8 @@ class RotaryEmbedding(nn.Module):
         freqs = torch.outer(t, inv_freq)
 
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = torch.cat((freqs, freqs), dim=-1)
+        # Note: when dim is odd, concatenation yields width 2*ceil(dim/2). Truncate to `dim` to match head_dim.
+        emb = torch.cat((freqs, freqs), dim=-1)[..., :dim]
         self.register_buffer("cos_cached", emb.cos(), persistent=False)
         self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
