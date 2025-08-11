@@ -1,0 +1,6 @@
+torch>=2.1
+pydantic>=1.10,<3
+requests>=2.31
+arxiv>=2.0; platform_system != "Windows" or python_version >= "3.9"
+psutil>=5.9
+python-dotenv>=1.0

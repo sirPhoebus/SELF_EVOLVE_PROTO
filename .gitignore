@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+*.egg-info/
+.eggs/
+.dist/
+.build/
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.coverage*
+htmlcov/
+logs
+# Environments
+.venv/
+venv/
+.env
+.env.*
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Artifacts & logs
+artifacts/
+checkpoints/
+*.log
+*.tmp
+commands.txt
+
+# Models & data
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+/data/
+
+# Reports/exports
+*.json
+!requirements.txt
+!package.json
+
+# Cache
+cache/
+*.cache
+
+# Node (if any future UI)
+node_modules/
