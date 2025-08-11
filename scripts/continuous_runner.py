@@ -7,6 +7,9 @@ import datetime as dt
 from types import SimpleNamespace
 from typing import Dict, Any, List
 
+# LLM client for patch repair
+from models.evolve.llm_client import LLMClient
+
 # Optional resource monitoring
 try:
     import psutil  # type: ignore
@@ -75,6 +78,18 @@ RUN_CONFIG: Dict[str, Any] = {
     "AUTOPATCH_MAX_FILES": 10,
     "AUTOPATCH_STRICT": True,
     "SMOKETEST_CMD": "python -m scripts.test_self_evolve --no-evolve --no-train",
+
+    # Unified diff requirements and repair (env-overridable via HRM_*)
+    "REQUIRE_UNIFIED_DIFF": True,
+    "REPAIR_UNIFIED_DIFF": True,
+    "MAX_PATCH_REPAIRS": 1,
+    "UNIFIED_DIFF_REQUIRED_MARKERS": ["--- ", "+++ ", "@@ "],
+    "DIFF_REPAIR_SYSTEM_PROMPT": (
+        "You are an expert ML systems engineer and git user. Convert the provided code-evolution proposal so that all patches.diff values are standard unified diffs compatible with 'git apply'. "
+        "Each patch must include 'diff --git a/<file> b/<file>' headers, '--- a/<file>' and '+++ b/<file>' lines, and '@@' hunk headers. "
+        "For new files, use '/dev/null' as the old path. Do not change high_level_changes or config_changes. Return STRICT JSON with the same schema."
+    ),
+    "DIFF_REPAIR_USER_PREFIX": "Rewrite this proposal so that patches contain ONLY standard unified diffs. Keep title, high_level_changes, and config_changes unchanged. Here is the current JSON proposal to convert:\n",
 
     # Config chaining
     "CHAIN_EVOLVED_CONFIG": True,
@@ -493,6 +508,77 @@ def run_cycle(cfg: Dict[str, Any], cycle: int) -> Dict[str, Any]:
     proposal_is_dict = isinstance(proposal, dict)
     proposal_auto = bool(proposal.get("auto_synthesized", False)) if proposal_is_dict else False
     patches_n = len(proposal.get("patches", [])) if proposal_is_dict else 0
+
+    # Validate and optionally repair proposal patches to unified diffs
+    def _is_unified_diff_text(diff_txt: str, markers: List[str]) -> bool:
+        if not isinstance(diff_txt, str) or not diff_txt.strip():
+            return False
+        for mk in markers:
+            if mk not in diff_txt:
+                return False
+        return True
+
+    def _proposal_has_unified_diffs(prop: Dict[str, Any], markers: List[str]) -> bool:
+        patches = prop.get("patches", []) or []
+        if not patches:
+            return True
+        for p in patches:
+            diff_txt = p.get("diff") if isinstance(p, dict) else str(p)
+            if not _is_unified_diff_text(diff_txt or "", markers):
+                return False
+        return True
+
+    if proposal_is_dict and cfg.get("REQUIRE_UNIFIED_DIFF", True) and cfg.get("REPAIR_UNIFIED_DIFF", True):
+        markers = cfg.get("UNIFIED_DIFF_REQUIRED_MARKERS", ["--- ", "+++ ", "@@ "])
+        if not _proposal_has_unified_diffs(proposal, markers):
+            # Attempt LLM-based repair
+            try:
+                client = LLMClient(
+                    provider=cfg.get("LLM_PROVIDER"),
+                    model=cfg.get("LLM_MODEL"),
+                    host=cfg.get("LLM_HOST"),
+                    timeout_s=int(cfg.get("LLM_TIMEOUT", 180)),
+                    temperature=float(cfg.get("LLM_TEMPERATURE", 0.2)),
+                    max_tokens=int(cfg.get("LLM_MAX_TOKENS", 600)),
+                )
+            except Exception:
+                client = None  # best-effort only
+
+            repairs = max(0, int(cfg.get("MAX_PATCH_REPAIRS", 1)))
+            for _ in range(repairs):
+                if client is None:
+                    break
+                try:
+                    repair_user = str(cfg.get("DIFF_REPAIR_USER_PREFIX", "")) + json.dumps(proposal, indent=2)
+                    repaired_raw = client.complete(prompt=repair_user, system=str(cfg.get("DIFF_REPAIR_SYSTEM_PROMPT", "")))
+                    repaired_txt = (repaired_raw or "").strip()
+                    if not repaired_txt:
+                        continue
+                    # Try to extract JSON if wrapped
+                    repaired_json = tse._extract_json_from_text(repaired_txt) if hasattr(tse, "_extract_json_from_text") else None
+                    if repaired_json is None:
+                        # fallback: naive parse
+                        repaired_json = repaired_txt
+                    candidate = json.loads(repaired_json)
+                    if isinstance(candidate, dict) and "patches" in candidate:
+                        proposal = candidate
+                        proposal_is_dict = True
+                        proposal_auto = bool(proposal.get("auto_synthesized", False))
+                        patches_n = len(proposal.get("patches", []))
+                        if _proposal_has_unified_diffs(proposal, markers):
+                            # Optionally overwrite saved proposal on disk with repaired one
+                            try:
+                                with open(paths["proposal_path"], "w", encoding="utf-8") as f:
+                                    json.dump(proposal, f, indent=2)
+                            except Exception:
+                                pass
+                            break
+                except Exception:
+                    continue
+            # Final warn if still invalid
+            if not _proposal_has_unified_diffs(proposal, markers):
+                # Let _apply_patches fail and record error, but we flag here too
+                pass
 
     # Autopatch
     autopatch = _apply_patches(cfg, proposal if proposal_is_dict else {}, paths)
